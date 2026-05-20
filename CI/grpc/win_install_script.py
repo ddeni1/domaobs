@@ -16,6 +16,7 @@ def setup_vcpkg_grpc(target: Path, clean_afterwards: bool):
 	triplet = "x64-windows-static-md-release"
 	if not target.exists():
 		check_call([*spa("git clone --single-branch --branch master https://github.com/Microsoft/vcpkg.git"), str(target)])
+		check_call([*spa("git reset --hard f6a5d4e8eb7476b8d7fc12a56dff300c1c986131")], cwd = target)  # vcpkg 2023.06.20 release, grpc 1.51.1
 		check_call([*spa("cmd /C bootstrap-vcpkg.bat")], cwd = target)
 	else:
 		print("vcpkg dir exists", target)
