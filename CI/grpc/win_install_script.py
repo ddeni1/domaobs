@@ -70,6 +70,35 @@ def setup_googleapis(googleapis_cmake_script: Path, target: Path, vcpkg: Path, t
 	done_file.write_text("yep")
 
 
+def setup_yandex_cloudapi(yandex_cmake_script: Path, target: Path, vcpkg: Path, triplet: str):
+	done_file = target.joinpath("done.txt")
+	gens = target.joinpath("gens")
+	if target.exists() and gens.exists() and done_file.exists():
+		print("yandex cloudapi exists", target)
+		return
+
+	if not target.exists():
+		check_call([*spa("git clone --depth 1 --single-branch --branch master https://github.com/yandex-cloud/cloudapi.git"), str(target)])
+
+	protoc = vcpkg.joinpath(rf"installed\{triplet}\tools\protobuf\protoc.exe")
+	grpc_cpp_path = vcpkg.joinpath(rf"installed\{triplet}\tools\grpc\grpc_cpp_plugin.exe")
+	protoc_include = vcpkg.joinpath(rf"installed\{triplet}\include")
+
+	assert yandex_cmake_script.exists()
+
+	gens.mkdir(exist_ok = True)
+	check_call([
+		"cmake",
+		f"-DPROTOC_PATH={str(protoc)}",
+		f"-DPROTOC_CPP_PATH={str(grpc_cpp_path)}",
+		f"-DPROTO_INCLUDE_PATH={str(protoc_include)}",
+		f"-DYANDEX_CLOUDAPI_PATH={str(target)}",
+		"-P", str(yandex_cmake_script),
+	], cwd = target)
+
+	done_file.write_text("yep")
+
+
 def main():
 	root_dir = Path(os.getcwd())
 	ci_root_dir = root_dir.joinpath("CI_build")
@@ -107,6 +136,11 @@ def main():
 	print("googleapis_dir", googleapis_dir)
 	setup_googleapis(googleapis_cmake_script, googleapis_dir, vcpkg_dir, triplet)
 
+	yandex_dir = build_deps_dir.joinpath("yandex_cloudapi")
+	yandex_cmake_script = root_dir.joinpath("yandex_CMakeLists.txt")
+	print("yandex_cloudapi_dir", yandex_dir)
+	setup_yandex_cloudapi(yandex_cmake_script, yandex_dir, vcpkg_dir, triplet)
+
 	build_dir = ci_root_dir.joinpath("build")
 	installed_dir = ci_root_dir.joinpath("installed")
 	build_dir.mkdir(exist_ok = True)
@@ -120,6 +154,7 @@ def main():
 		f"-DOBS_BUILD_DIR={str(build_installed_dir)}",
 		f"-DOBS_DEPS_DIR={str(obs_deps_dir)}",
 		f"-DGOOGLEAPIS_DIR={str(googleapis_dir)}",
+		f"-DYANDEX_CLOUDAPI_DIR={str(yandex_dir)}",
 		f"-DCMAKE_PREFIX_PATH={str(vcpkg_prefix_path)}",
 		f"-DCMAKE_INSTALL_PREFIX:PATH={str(installed_dir)}",
 		get_google_api_key_arg(),
