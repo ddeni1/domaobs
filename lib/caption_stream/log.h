@@ -29,6 +29,7 @@
 
 #include <time.h>
 #include <string.h>
+#include <stdarg.h>
 
 #endif
 
@@ -60,7 +61,30 @@ static inline char *timenow();
 
 #define PRINTFUNCTION(format, ...)      objc_print(@format, __VA_ARGS__)
 #elif _WIN32
-#define PRINTFUNCTION(format, ...)      printf(format"\n", __VA_ARGS__)
+// Log to file because OBS doesn't capture stdout/stderr from plugin libraries
+#include <stdio.h>
+#include <stdlib.h>
+static inline void _caption_log_to_file(const char *fmt, ...) {
+    static FILE *log_fp = NULL;
+    if (!log_fp) {
+        char path[512];
+        const char *userprofile = getenv("USERPROFILE");
+        if (userprofile) {
+            snprintf(path, sizeof(path), "%s\\caption_debug.log", userprofile);
+        } else {
+            snprintf(path, sizeof(path), "C:\\caption_debug.log");
+        }
+        log_fp = fopen(path, "a");
+    }
+    if (log_fp) {
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(log_fp, fmt, args);
+        va_end(args);
+        fflush(log_fp);
+    }
+}
+#define PRINTFUNCTION(format, ...)      _caption_log_to_file(format, __VA_ARGS__)
 #else
 #define PRINTFUNCTION(format, ...)      fprintf(stderr, format, __VA_ARGS__)
 #endif
