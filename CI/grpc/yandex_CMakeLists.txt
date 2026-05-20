@@ -1,0 +1,58 @@
+cmake_minimum_required(VERSION 3.12)
+
+message("yandex cloudapi proto generation")
+
+if (NOT YANDEX_CLOUDAPI_PATH)
+    message(FATAL_ERROR "no YANDEX_CLOUDAPI_PATH path")
+endif ()
+
+if (NOT PROTO_INCLUDE_PATH)
+    message(FATAL_ERROR "no PROTO_INCLUDE_PATH path")
+endif ()
+
+if (NOT PROTOC_PATH)
+    message(FATAL_ERROR "no PROTOC_PATH path")
+endif ()
+
+if (NOT PROTOC_CPP_PATH)
+    message(FATAL_ERROR "no PROTOC_CPP_PATH path")
+endif ()
+
+# Yandex .proto files to generate
+set(YANDEX_PROTO_FILES
+    yandex/cloud/ai/stt/v3/stt.proto
+    yandex/cloud/ai/stt/v3/stt_service.proto
+    yandex/cloud/api/operation.proto
+    yandex/cloud/operation/operation.proto
+    yandex/cloud/validation.proto
+)
+
+# Also need a few google ones that yandex protos depend on, from yandex's third_party/googleapis
+set(YANDEX_GOOGLE_PROTO_FILES
+    google/api/http.proto
+    google/api/annotations.proto
+    google/rpc/status.proto
+)
+
+foreach (proto_file ${YANDEX_PROTO_FILES} ${YANDEX_GOOGLE_PROTO_FILES})
+    string(REGEX REPLACE ".proto$" ".pb.cc" proto_out_file ${proto_file})
+    message("yandex proto_file: ${proto_file} -> ${proto_out_file}")
+
+    execute_process(
+            COMMAND ${PROTOC_PATH}
+                -I.
+                -Ithird_party/googleapis
+                -I${PROTO_INCLUDE_PATH}
+                --plugin=protoc-gen-grpc=${PROTOC_CPP_PATH}
+                --cpp_out=gens
+                --grpc_out=gens
+                ${proto_file}
+            WORKING_DIRECTORY ${YANDEX_CLOUDAPI_PATH}
+            RESULT_VARIABLE RES_CODE
+    )
+
+    if(NOT RES_CODE EQUAL 0)
+        message(FATAL_ERROR "yandex protoc failed ${proto_file}")
+        break()
+    endif()
+endforeach ()
