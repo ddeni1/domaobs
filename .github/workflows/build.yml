@@ -17,58 +17,46 @@ jobs:
       - name: Cache OBS Studio dependencies
         uses: actions/cache@v4
         with:
-          key: "obs-studio-30.0.0-${{ runner.os }}-grpc-v4"
+          key: "obs-studio-30.0.0-${{ runner.os }}-grpc-v5"
           path: CI\grpc\CI_build\build_deps\obs-studio
       - name: Cache vcpkg/gRPC build
         uses: actions/cache@v4
         with:
-          key: "vcpkg-grpc-1.51-${{ runner.os }}-v4"
+          key: "vcpkg-grpc-1.51-${{ runner.os }}-v5"
           path: |
             CI\grpc\CI_build\build_deps\vcpkg
             CI\grpc\CI_build\build_deps\googleapis
-      - name: Pre-download 7zip 21.07 from mirrors
+      - name: Install 7-Zip via Chocolatey
+        shell: pwsh
+        run: |
+          Write-Host "Checking 7-Zip..."
+          $7zPath = "C:\Program Files\7-Zip\7z.exe"
+          if (Test-Path $7zPath) {
+            Write-Host "7-Zip already installed at $7zPath"
+          } else {
+            Write-Host "Installing 7-Zip via Chocolatey..."
+            choco install 7zip -y --no-progress
+          }
+          & $7zPath | Select-Object -First 3
+      - name: Patch vcpkg to use system 7-Zip
         shell: pwsh
         working-directory: CI\grpc
         run: |
-          $downloadsDir = "CI_build\build_deps\vcpkg\downloads"
-          New-Item -ItemType Directory -Force -Path $downloadsDir | Out-Null
-          $target = Join-Path $downloadsDir "7z2107-extra.7z"
-          if (Test-Path $target) {
-            Write-Host "7zip already present (from cache)"
-            exit 0
-          }
-          $mirrors = @(
-            "https://d2.7-zip.org/a/7z2107-extra.7z",
-            "https://web.archive.org/web/2022/https://www.7-zip.org/a/7z2107-extra.7z",
-            "https://github.com/develar/7zip-bin/raw/master/win/x64/7za.exe"
-          )
-          $success = $false
-          foreach ($url in $mirrors) {
-            try {
-              Write-Host "Trying: $url"
-              Invoke-WebRequest -Uri $url -OutFile $target -UserAgent "Mozilla/5.0" -ErrorAction Stop
-              $size = (Get-Item $target).Length
-              if ($size -lt 100000) {
-                Write-Host "File too small ($size bytes), probably HTML error page. Removing."
-                Remove-Item $target
-                continue
-              }
-              Write-Host "Downloaded successfully: $size bytes"
-              $success = $true
-              break
-            } catch {
-              Write-Host "Failed: $_"
-            }
-          }
-          if (-not $success) {
-            Write-Host "All mirrors failed. Will continue and see if vcpkg can find another way."
-          }
+          $vcpkgDir = "CI_build\build_deps\vcpkg"
+          New-Item -ItemType Directory -Force -Path $vcpkgDir | Out-Null
+          New-Item -ItemType Directory -Force -Path "$vcpkgDir\downloads\tools\7zip-21.07-windows" | Out-Null
+          $7zSystem = "C:\Program Files\7-Zip\7z.exe"
+          $7zExtra = "$vcpkgDir\downloads\tools\7zip-21.07-windows\7za.exe"
+          Copy-Item $7zSystem $7zExtra -Force
+          Write-Host "Copied system 7zip to vcpkg downloads:"
+          Get-Item $7zExtra | Select-Object Name,Length
       - name: Build plugin
         shell: cmd
         working-directory: CI\grpc
         env:
           CLEAN_OBS: 0
           CLEAN_VCPKG: 0
+          VCPKG_USE_SYSTEM_BINARIES: 1
         run: python win_install_script.py
       - name: Upload plugin artifact
         uses: actions/upload-artifact@v4
