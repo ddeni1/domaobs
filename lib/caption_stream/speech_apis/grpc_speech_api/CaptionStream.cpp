@@ -182,7 +182,7 @@ static void read_results_loop_thread(
             update = &response.partial();
             is_final = false;
         } else if (response.has_final()) {
-            update = &response.final_();
+            update = &response.final();
             is_final = true;
         } else if (response.has_final_refinement() && response.final_refinement().has_normalized_text()) {
             update = &response.final_refinement().normalized_text();
