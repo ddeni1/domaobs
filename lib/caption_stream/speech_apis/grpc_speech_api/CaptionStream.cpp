@@ -103,6 +103,9 @@ static bool write_config(
     rec_config->set_profanity_filter(bool(settings.profanity_filter));
     rec_config->set_max_alternatives(0);
 
+    // Use less aggressive language model — fewer "smart" corrections of unusual words
+    rec_config->set_model("command_and_search");
+    rec_config->set_use_enhanced(false);
 
     return streamer->Write(request);
 }
