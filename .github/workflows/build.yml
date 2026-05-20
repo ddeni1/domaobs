@@ -17,30 +17,51 @@ jobs:
       - name: Cache OBS Studio dependencies
         uses: actions/cache@v4
         with:
-          key: "obs-studio-30.0.0-${{ runner.os }}-grpc-v3"
+          key: "obs-studio-30.0.0-${{ runner.os }}-grpc-v4"
           path: CI\grpc\CI_build\build_deps\obs-studio
       - name: Cache vcpkg/gRPC build
         uses: actions/cache@v4
         with:
-          key: "vcpkg-grpc-1.51-${{ runner.os }}-v3"
+          key: "vcpkg-grpc-1.51-${{ runner.os }}-v4"
           path: |
             CI\grpc\CI_build\build_deps\vcpkg
             CI\grpc\CI_build\build_deps\googleapis
-      - name: Pre-download 7zip 21.07 from SourceForge mirror
+      - name: Pre-download 7zip 21.07 from mirrors
         shell: pwsh
         working-directory: CI\grpc
         run: |
           $downloadsDir = "CI_build\build_deps\vcpkg\downloads"
           New-Item -ItemType Directory -Force -Path $downloadsDir | Out-Null
           $target = Join-Path $downloadsDir "7z2107-extra.7z"
-          if (-not (Test-Path $target)) {
-            Write-Host "Downloading 7zip 21.07 from SourceForge..."
-            $url = "https://downloads.sourceforge.net/project/sevenzip/7-Zip/21.07/7z2107-extra.7z"
-            Invoke-WebRequest -Uri $url -OutFile $target -UserAgent "Mozilla/5.0"
-            Write-Host "Downloaded successfully:"
-            Get-Item $target | Select-Object Name,Length
-          } else {
+          if (Test-Path $target) {
             Write-Host "7zip already present (from cache)"
+            exit 0
+          }
+          $mirrors = @(
+            "https://d2.7-zip.org/a/7z2107-extra.7z",
+            "https://web.archive.org/web/2022/https://www.7-zip.org/a/7z2107-extra.7z",
+            "https://github.com/develar/7zip-bin/raw/master/win/x64/7za.exe"
+          )
+          $success = $false
+          foreach ($url in $mirrors) {
+            try {
+              Write-Host "Trying: $url"
+              Invoke-WebRequest -Uri $url -OutFile $target -UserAgent "Mozilla/5.0" -ErrorAction Stop
+              $size = (Get-Item $target).Length
+              if ($size -lt 100000) {
+                Write-Host "File too small ($size bytes), probably HTML error page. Removing."
+                Remove-Item $target
+                continue
+              }
+              Write-Host "Downloaded successfully: $size bytes"
+              $success = $true
+              break
+            } catch {
+              Write-Host "Failed: $_"
+            }
+          }
+          if (-not $success) {
+            Write-Host "All mirrors failed. Will continue and see if vcpkg can find another way."
           }
       - name: Build plugin
         shell: cmd
