@@ -5,14 +5,6 @@ This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
 as published by the Free Software Foundation; either version 2
 of the License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ******************************************************************************/
 
 #ifdef _WIN32
@@ -28,8 +20,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #endif
 
 #include <utility>
-
-
 #include <string>
 #include <sstream>
 #include "CaptionStream.h"
@@ -37,13 +27,19 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "log.h"
 
 #include <grpcpp/grpcpp.h>
-#include <google/cloud/speech/v1/cloud_speech.grpc.pb.h>
+#include <yandex/cloud/ai/stt/v3/stt_service.grpc.pb.h>
+#include <yandex/cloud/ai/stt/v3/stt.pb.h>
 
-using google::cloud::speech::v1::RecognitionConfig;
-using google::cloud::speech::v1::Speech;
-using google::cloud::speech::v1::StreamingRecognizeRequest;
-using google::cloud::speech::v1::StreamingRecognizeResponse;
-using google::cloud::speech::v1::RecognitionConfig_AudioEncoding;
+using speechkit::stt::v3::Recognizer;
+using speechkit::stt::v3::StreamingRequest;
+using speechkit::stt::v3::StreamingResponse;
+using speechkit::stt::v3::StreamingOptions;
+using speechkit::stt::v3::RecognitionModelOptions;
+using speechkit::stt::v3::TextNormalizationOptions;
+using speechkit::stt::v3::AudioFormatOptions;
+using speechkit::stt::v3::RawAudio;
+using speechkit::stt::v3::LanguageRestrictionOptions;
+using speechkit::stt::v3::AudioChunk;
 
 static void audio_sender_thread(std::shared_ptr<CaptionStream> self);
 
@@ -51,7 +47,7 @@ static void _audio_sender(CaptionStream &self);
 
 static void read_results_loop_thread(
         CaptionStream &self,
-        grpc::ClientReaderWriterInterface<StreamingRecognizeRequest, StreamingRecognizeResponse> *streamer
+        grpc::ClientReaderWriterInterface<StreamingRequest, StreamingResponse> *streamer
 );
 
 CaptionStream::CaptionStream(
@@ -59,7 +55,7 @@ CaptionStream::CaptionStream(
 ) :
         settings(settings),
         session_pair(random_string(15)) {
-    info_log("CaptionStream GRPC Speech, created session pair: %s", session_pair.c_str());
+    info_log("CaptionStream YANDEX SpeechKit v3, created session pair: %s", session_pair.c_str());
 }
 
 bool CaptionStream::start(std::shared_ptr<CaptionStream> self) {
@@ -90,32 +86,41 @@ static void audio_sender_thread(std::shared_ptr<CaptionStream> self) {
 }
 
 static bool write_config(
-        grpc::ClientReaderWriterInterface<StreamingRecognizeRequest, StreamingRecognizeResponse> *streamer,
+        grpc::ClientReaderWriterInterface<StreamingRequest, StreamingResponse> *streamer,
         const CaptionStreamSettings &settings
 ) {
-    StreamingRecognizeRequest request;
-    auto *streaming_config = request.mutable_streaming_config();
-    streaming_config->set_interim_results(true);
-    auto *rec_config = streaming_config->mutable_config();
-    rec_config->set_encoding(RecognitionConfig_AudioEncoding::RecognitionConfig_AudioEncoding_LINEAR16);
-    rec_config->set_sample_rate_hertz(16000);
-    rec_config->set_language_code(settings.language);
-    rec_config->set_profanity_filter(bool(settings.profanity_filter));
-    rec_config->set_max_alternatives(0);
+    StreamingRequest request;
+    auto *session_options = request.mutable_session_options();
+    auto *rec_model = session_options->mutable_recognition_model();
+    rec_model->set_model("general");
+    rec_model->set_audio_processing_type(RecognitionModelOptions::REAL_TIME);
 
-    // Use less aggressive language model — fewer "smart" corrections of unusual words
-    rec_config->set_model("command_and_search");
-    rec_config->set_use_enhanced(false);
+    auto *audio_format = rec_model->mutable_audio_format();
+    auto *raw_audio = audio_format->mutable_raw_audio();
+    raw_audio->set_audio_encoding(RawAudio::LINEAR16_PCM);
+    raw_audio->set_sample_rate_hertz(16000);
+    raw_audio->set_audio_channel_count(1);
+
+    // === Это главное — выключаем "литературизацию" ===
+    auto *text_norm = rec_model->mutable_text_normalization();
+    text_norm->set_text_normalization(TextNormalizationOptions::TEXT_NORMALIZATION_ENABLED);
+    text_norm->set_profanity_filter(bool(settings.profanity_filter));
+    text_norm->set_literature_text(false);  // <-- НЕ литературизировать
+
+    // Language restriction — say it's Russian (or whatever user picked)
+    auto *lang_restriction = rec_model->mutable_language_restriction();
+    lang_restriction->set_restriction_type(LanguageRestrictionOptions::WHITELIST);
+    lang_restriction->add_language_code(settings.language.empty() ? "ru-RU" : settings.language);
 
     return streamer->Write(request);
 }
 
 static void write_audio_loop(
-        grpc::ClientReaderWriterInterface<StreamingRecognizeRequest, StreamingRecognizeResponse> *streamer,
+        grpc::ClientReaderWriterInterface<StreamingRequest, StreamingResponse> *streamer,
         CaptionStream &self
 ) {
     uint chunk_count = 0;
-    StreamingRecognizeRequest request;
+    StreamingRequest request;
 
     while (!self.is_stopped()) {
         string *audio_chunk = self.dequeue_audio_data(self.settings.send_timeout_ms * 1000);
@@ -130,7 +135,11 @@ static void write_audio_loop(
             continue;
         }
 
-        request.set_audio_content(*audio_chunk);
+        // Yandex API uses an oneof Event with chunk
+        request.Clear();
+        auto *chunk = request.mutable_chunk();
+        chunk->set_data(*audio_chunk);
+
         if (!streamer->Write(request)) {
             info_log("write_audio_loop write failed, stopping");
             delete audio_chunk;
@@ -147,43 +156,61 @@ static void write_audio_loop(
 
 static void read_results_loop_thread(
         CaptionStream &self,
-        grpc::ClientReaderWriterInterface<StreamingRecognizeRequest, StreamingRecognizeResponse> *streamer
+        grpc::ClientReaderWriterInterface<StreamingRequest, StreamingResponse> *streamer
 ) {
 
     info_log("read_results_loop_thread starting");
-    StreamingRecognizeResponse response;
+    StreamingResponse response;
     std::chrono::steady_clock::time_point first_received_at;
     bool update_first_received_at = true;
-    while (streamer->Read(&response)) {
 
+    while (streamer->Read(&response)) {
         if (self.is_stopped())
             break;
 
-        info_log("Result size: %d", response.results_size());
-        for (int r = 0; r < response.results_size(); ++r) {
-            auto result = response.results(r);
-            info_log("ind: %d stability: %f final: %d", r, result.stability(), result.is_final());
+        // Yandex v3 response has oneof Event:
+        //   partial (AlternativeUpdate) — interim
+        //   final (AlternativeUpdate) — finalized for current utterance
+        //   eou_update — end-of-utterance marker
+        //   final_refinement (FinalRefinement.normalized_text) — post-processed final
+        //   status_code — status
+        //   classifier_update — classifier
+        bool is_final = false;
+        const speechkit::stt::v3::AlternativeUpdate* update = nullptr;
 
-            for (int a = 0; a < result.alternatives_size(); ++a) {
-                auto alternative = result.alternatives(a);
-                info_log("conf: %f text: %s", alternative.confidence(), alternative.transcript().c_str());
+        if (response.has_partial()) {
+            update = &response.partial();
+            is_final = false;
+        } else if (response.has_final()) {
+            update = &response.final_();
+            is_final = true;
+        } else if (response.has_final_refinement() && response.final_refinement().has_normalized_text()) {
+            update = &response.final_refinement().normalized_text();
+            is_final = true;
+        } else {
+            // skip other event types (eou_update, classifier_update, status_code)
+            continue;
+        }
 
-                auto now = std::chrono::steady_clock::now();
-                if (update_first_received_at)
-                    first_received_at = now;
+        if (!update || update->alternatives_size() == 0)
+            continue;
 
-                CaptionResult cap_result(0, result.is_final(), result.stability(), alternative.transcript(), "", first_received_at, now);
-                update_first_received_at = result.is_final();
-                {
-                    std::lock_guard<recursive_mutex> lock(self.on_caption_cb_handle.mutex);
-                    if (self.on_caption_cb_handle.callback_fn) {
-                        self.on_caption_cb_handle.callback_fn(cap_result);
-                    }
-                }
-                break;
+        const auto& alt = update->alternatives(0);
+        info_log("yandex %s text: %s", is_final ? "final" : "partial", alt.text().c_str());
 
+        auto now = std::chrono::steady_clock::now();
+        if (update_first_received_at)
+            first_received_at = now;
+
+        // stability: partial = ~0.5, final = 1.0
+        double stability = is_final ? 1.0 : 0.5;
+        CaptionResult cap_result(0, is_final, stability, alt.text(), "", first_received_at, now);
+        update_first_received_at = is_final;
+        {
+            std::lock_guard<recursive_mutex> lock(self.on_caption_cb_handle.mutex);
+            if (self.on_caption_cb_handle.callback_fn) {
+                self.on_caption_cb_handle.callback_fn(cap_result);
             }
-            break;
         }
     }
     info_log("read_results_loop_thread done");
@@ -197,7 +224,7 @@ static void read_results_loop_thread(
 #endif
 
 static void _audio_sender(CaptionStream &self) {
-    info_log("=========== _audio_sender ENTERED, api_key length: %zu ===========", self.settings.api_key.length());
+    info_log("=========== _audio_sender (YANDEX) ENTERED, api_key length: %zu ===========", self.settings.api_key.length());
 
     try {
         auto options = grpc::SslCredentialsOptions();
@@ -210,8 +237,10 @@ static void _audio_sender(CaptionStream &self) {
         auto creds = grpc::SslCredentials(options);
 
         // === WORKAROUND for gRPC DNS bug on Windows ===
-        std::string target_address = "speech.googleapis.com:443";
-        info_log("resolving speech.googleapis.com via system DNS...");
+        // Resolve hostname via system DNS, then connect by IP directly.
+        const char* yandex_host = "stt.api.cloud.yandex.net";
+        std::string target_address = std::string(yandex_host) + ":443";
+        info_log("resolving %s via system DNS...", yandex_host);
 
 #ifdef _WIN32
         WSADATA wsaData;
@@ -223,7 +252,7 @@ static void _audio_sender(CaptionStream &self) {
         hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
         struct addrinfo* result = nullptr;
-        int dns_ret = getaddrinfo("speech.googleapis.com", "443", &hints, &result);
+        int dns_ret = getaddrinfo(yandex_host, "443", &hints, &result);
         if (dns_ret == 0 && result) {
             char ip_str[INET_ADDRSTRLEN];
             struct sockaddr_in* sai = (struct sockaddr_in*)result->ai_addr;
@@ -236,18 +265,21 @@ static void _audio_sender(CaptionStream &self) {
         }
 
         grpc::ChannelArguments channel_args;
-        channel_args.SetSslTargetNameOverride("speech.googleapis.com");
+        channel_args.SetSslTargetNameOverride(yandex_host);
         auto channel = grpc::CreateCustomChannel(target_address, creds, channel_args);
-        std::unique_ptr<Speech::Stub> speech(Speech::NewStub(channel));
+        std::unique_ptr<Recognizer::Stub> recognizer(Recognizer::NewStub(channel));
 
         grpc::ClientContext context;
-        context.AddMetadata("x-goog-api-key", self.settings.api_key);
+        // Yandex SpeechKit uses Api-Key authorization
+        std::string auth_header = std::string("Api-Key ") + self.settings.api_key;
+        context.AddMetadata("authorization", auth_header);
+        info_log("api key set in authorization header");
 
-        auto streamer = speech->StreamingRecognize(&context);
+        auto streamer = recognizer->RecognizeStreaming(&context);
 
-        info_log("write speech config");
+        info_log("write yandex session options");
         if (write_config(streamer.get(), self.settings)) {
-            info_log("write speech config done");
+            info_log("write session options done");
 
             std::thread downstream_thread(&read_results_loop_thread, std::ref(self), streamer.get());
 
@@ -260,16 +292,16 @@ static void _audio_sender(CaptionStream &self) {
             downstream_thread.join();
             info_log("downstream thread finished!");
 
-            StreamingRecognizeResponse response;
+            StreamingResponse response;
             while (streamer->Read(&response))
                 continue;
         } else {
-            info_log("write speech config failed");
+            info_log("write session options failed");
         }
 
         auto status = streamer->Finish();
         if (!status.ok()) {
-            error_log("grpc stream error: %s", status.error_message().c_str());
+            error_log("yandex grpc stream error: %s", status.error_message().c_str());
         }
     }
     catch (const std::exception &ex) {
@@ -342,5 +374,4 @@ CaptionStream::~CaptionStream() {
         }
     }
     info_log("~CaptionStream deconstructor, deleted left %d in queue", cleared);
-
 }
