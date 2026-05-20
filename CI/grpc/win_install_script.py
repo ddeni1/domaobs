@@ -12,6 +12,19 @@ from win_build_obs import check_call, CMAKE_VS_ARGS, spa, setup_obs
 from win_shared import package_zip, get_google_api_key_arg
 
 
+def copy_system_7zip(vcpkg_dir: Path):
+	"""Pre-populate vcpkg's 7zip location with system 7zip so it doesn't try to download from broken mirror."""
+	system_7z = Path(r"C:\Program Files\7-Zip\7z.exe")
+	if not system_7z.exists():
+		print(f"WARNING: system 7-zip not found at {system_7z}")
+		return
+	target_dir = vcpkg_dir / "downloads" / "tools" / "7zip-21.07-windows"
+	target_dir.mkdir(parents = True, exist_ok = True)
+	target = target_dir / "7za.exe"
+	shutil.copy(system_7z, target)
+	print(f"Copied system 7zip to {target} ({target.stat().st_size} bytes)")
+
+
 def setup_vcpkg_grpc(target: Path, clean_afterwards: bool):
 	triplet = "x64-windows-static-md-release"
 	if not target.exists():
@@ -20,6 +33,9 @@ def setup_vcpkg_grpc(target: Path, clean_afterwards: bool):
 		check_call([*spa("cmd /C bootstrap-vcpkg.bat")], cwd = target)
 	else:
 		print("vcpkg dir exists", target)
+
+	# Pre-populate 7zip BEFORE vcpkg tries to download it
+	copy_system_7zip(target)
 
 	triplet_path = target.joinpath(rf"triplets\community\{triplet}.cmake")
 	if not triplet_path.exists():
