@@ -15,16 +15,9 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ******************************************************************************/
 
-#include <utility>
-
-
-#include <string>
-#include <sstream>
-#include "CaptionStream.h"
-#include "utils.h"
-#include "log.h"
-
 #ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
@@ -33,6 +26,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <netdb.h>
 #include <arpa/inet.h>
 #endif
+
+#include <utility>
+
+
+#include <string>
+#include <sstream>
+#include "CaptionStream.h"
+#include "utils.h"
+#include "log.h"
 
 #include <grpcpp/grpcpp.h>
 #include <google/cloud/speech/v1/cloud_speech.grpc.pb.h>
@@ -61,10 +63,6 @@ CaptionStream::CaptionStream(
 }
 
 bool CaptionStream::start(std::shared_ptr<CaptionStream> self) {
-    // Requires the CaptionStream to have been made as shared_pointer and passed to itself to start.
-    // Kept by each thread to ensure the object isn't deconstructed before all threads are done.
-    // I'm sure there are much nicer ways to do this but I don't know any of them so here we are.
-
     if (self.get() != this)
         return false;
 
@@ -203,16 +201,12 @@ static void _audio_sender(CaptionStream &self) {
 
 #ifdef GRPC_USE_INCLUDED_CERTS
         info_log("using embedded certs");
-        // grpc needs CA certs on Windows (and Unix depending on how it's been built)
-        // just include as string directly, more convenient than shipping the roots.pem file
         std::string certs(ROOTS_PEM, ROOTS_PEM + sizeof(ROOTS_PEM) / sizeof(ROOTS_PEM[0]));
         options.pem_root_certs = certs;
 #endif
         auto creds = grpc::SslCredentials(options);
 
         // === WORKAROUND for gRPC DNS bug on Windows ===
-        // Resolve "speech.googleapis.com" via system DNS (which works), then connect to IP directly.
-        // We pass the hostname as SSL target name so certificate validation still works.
         std::string target_address = "speech.googleapis.com:443";
         info_log("resolving speech.googleapis.com via system DNS...");
 
@@ -223,7 +217,7 @@ static void _audio_sender(CaptionStream &self) {
 
         struct addrinfo hints;
         memset(&hints, 0, sizeof(hints));
-        hints.ai_family = AF_INET;  // IPv4 only — avoid IPv6 DNS issues
+        hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
         struct addrinfo* result = nullptr;
         int dns_ret = getaddrinfo("speech.googleapis.com", "443", &hints, &result);
@@ -263,7 +257,6 @@ static void _audio_sender(CaptionStream &self) {
             downstream_thread.join();
             info_log("downstream thread finished!");
 
-            // read remaining otherwise Finish() can block?
             StreamingRecognizeResponse response;
             while (streamer->Read(&response))
                 continue;
@@ -297,8 +290,6 @@ bool CaptionStream::queue_audio_data(const char *audio_data, const uint data_siz
     string *str = new string(audio_data, data_size);
 
     if (settings.max_queue_depth) {
-        // rough estimate in dropping, dont care about being off by one or two in threaded cases
-
         int cleared_cnt = 0;
         while (audio_queue.size_approx() > settings.max_queue_depth) {
             string *item;
