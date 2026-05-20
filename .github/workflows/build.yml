@@ -17,39 +17,23 @@ jobs:
       - name: Cache OBS Studio dependencies
         uses: actions/cache@v4
         with:
-          key: "obs-studio-30.0.0-${{ runner.os }}-grpc-v5"
+          key: "obs-studio-30.0.0-${{ runner.os }}-grpc-v6"
           path: CI\grpc\CI_build\build_deps\obs-studio
       - name: Cache vcpkg/gRPC build
         uses: actions/cache@v4
         with:
-          key: "vcpkg-grpc-1.51-${{ runner.os }}-v5"
+          key: "vcpkg-grpc-1.51-${{ runner.os }}-v6"
           path: |
             CI\grpc\CI_build\build_deps\vcpkg
             CI\grpc\CI_build\build_deps\googleapis
       - name: Install 7-Zip via Chocolatey
         shell: pwsh
         run: |
-          Write-Host "Checking 7-Zip..."
           $7zPath = "C:\Program Files\7-Zip\7z.exe"
-          if (Test-Path $7zPath) {
-            Write-Host "7-Zip already installed at $7zPath"
-          } else {
-            Write-Host "Installing 7-Zip via Chocolatey..."
+          if (-not (Test-Path $7zPath)) {
             choco install 7zip -y --no-progress
           }
-          & $7zPath | Select-Object -First 3
-      - name: Patch vcpkg to use system 7-Zip
-        shell: pwsh
-        working-directory: CI\grpc
-        run: |
-          $vcpkgDir = "CI_build\build_deps\vcpkg"
-          New-Item -ItemType Directory -Force -Path $vcpkgDir | Out-Null
-          New-Item -ItemType Directory -Force -Path "$vcpkgDir\downloads\tools\7zip-21.07-windows" | Out-Null
-          $7zSystem = "C:\Program Files\7-Zip\7z.exe"
-          $7zExtra = "$vcpkgDir\downloads\tools\7zip-21.07-windows\7za.exe"
-          Copy-Item $7zSystem $7zExtra -Force
-          Write-Host "Copied system 7zip to vcpkg downloads:"
-          Get-Item $7zExtra | Select-Object Name,Length
+          Get-Item $7zPath | Select-Object FullName,Length
       - name: Build plugin
         shell: cmd
         working-directory: CI\grpc
