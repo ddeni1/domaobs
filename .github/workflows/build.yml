@@ -1,0 +1,60 @@
+name: Build Plugin (gRPC)
+
+on:
+  push:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+jobs:
+  build-windows-grpc:
+    runs-on: windows-2022
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache OBS Studio dependencies
+        uses: actions/cache@v4
+        with:
+          key: "obs-studio-30.0.0-${{ runner.os }}-grpc-v1"
+          path: CI\grpc\CI_build\build_deps\obs-studio
+
+      - name: Cache vcpkg/gRPC build
+        uses: actions/cache@v4
+        with:
+          key: "vcpkg-grpc-1.48-${{ runner.os }}-v1"
+          path: |
+            CI\grpc\CI_build\build_deps\vcpkg
+            CI\grpc\CI_build\build_deps\googleapis
+
+      - name: Build plugin
+        shell: cmd
+        working-directory: CI\grpc
+        env:
+          CLEAN_OBS: 0
+          CLEAN_VCPKG: 0
+        run: python win_install_script.py
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Closed_Captions_Plugin_Windows_gRPC_PATCHED
+          path: CI\grpc\CI_build\release\
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Upload build logs on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-logs
+          path: |
+            CI\grpc\CI_build\build\**\*.log
+            CI\grpc\CI_build\build_deps\vcpkg\buildtrees\**\*.log
+          retention-days: 30
