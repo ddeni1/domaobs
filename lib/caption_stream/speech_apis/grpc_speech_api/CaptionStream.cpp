@@ -47,7 +47,7 @@ CaptionStream::CaptionStream(
 ) :
         settings(settings),
         session_pair(random_string(15)) {
-    debug_log("CaptionStream GRPC Speech, created session pair: %s", session_pair.c_str());
+    info_log("CaptionStream GRPC Speech, created session pair: %s", session_pair.c_str());
 }
 
 bool CaptionStream::start(std::shared_ptr<CaptionStream> self) {
@@ -69,16 +69,16 @@ bool CaptionStream::start(std::shared_ptr<CaptionStream> self) {
 
 
 static void audio_sender_thread(std::shared_ptr<CaptionStream> self) {
-    debug_log("starting audio_sender_thread() thread");
+    info_log("starting audio_sender_thread() thread");
     if (!self) {
         self->stop();
-        debug_log("audio_sender_thread() no self");
+        info_log("audio_sender_thread() no self");
         return;
     }
 
     _audio_sender(*self);
     self->stop();
-    debug_log("finished audio_sender_thread() thread");
+    info_log("finished audio_sender_thread() thread");
 }
 
 static bool write_config(
@@ -109,29 +109,29 @@ static void write_audio_loop(
     while (!self.is_stopped()) {
         string *audio_chunk = self.dequeue_audio_data(self.settings.send_timeout_ms * 1000);
         if (audio_chunk == nullptr) {
-            debug_log("couldn't deque audio chunk in time");
+            info_log("couldn't deque audio chunk in time");
             break;
         }
 
         if (audio_chunk->empty()) {
-            debug_log("got 0 size audio chunk. ignoring");
+            info_log("got 0 size audio chunk. ignoring");
             delete audio_chunk;
             continue;
         }
 
-//        debug_log("qs %zu", audio_queue.size_approx());
+//        info_log("qs %zu", audio_queue.size_approx());
 //        std::this_thread::sleep_for(std::chrono::milliseconds(rand() % 30));
 //        std::this_thread::sleep_for(std::chrono::milliseconds(30));
 
         request.set_audio_content(*audio_chunk);
         if (!streamer->Write(request)) {
-            debug_log("write_audio_loop write failed, stopping");
+            info_log("write_audio_loop write failed, stopping");
             delete audio_chunk;
             break;
         }
         if (chunk_count % 20 == 0)
-            debug_log("sent audio chunk %d, %lu bytes", chunk_count, audio_chunk->size());
-//        debug_log("sent audio chunk %d, %lu bytes", chunk_count, audio_chunk->size());
+            info_log("sent audio chunk %d, %lu bytes", chunk_count, audio_chunk->size());
+//        info_log("sent audio chunk %d, %lu bytes", chunk_count, audio_chunk->size());
 
         delete audio_chunk;
         chunk_count++;
@@ -144,7 +144,7 @@ static void read_results_loop_thread(
         grpc::ClientReaderWriterInterface<StreamingRecognizeRequest, StreamingRecognizeResponse> *streamer
 ) {
 
-    debug_log("read_results_loop_thread starting");
+    info_log("read_results_loop_thread starting");
     StreamingRecognizeResponse response;
     std::chrono::steady_clock::time_point first_received_at;
     bool update_first_received_at = true;
@@ -180,7 +180,7 @@ static void read_results_loop_thread(
             break;
         }
     }
-    debug_log("read_results_loop_thread done");
+    info_log("read_results_loop_thread done");
     self.stop();
 };
 
@@ -191,13 +191,13 @@ static void read_results_loop_thread(
 #endif
 
 static void _audio_sender(CaptionStream &self) {
-    debug_log("_audio_sender");
+    info_log("=========== _audio_sender ENTERED, api_key length: %zu ===========", self.settings.api_key.length());
 
     try {
         auto options = grpc::SslCredentialsOptions();
 
 #ifdef GRPC_USE_INCLUDED_CERTS
-        debug_log("using embedded certs");
+        info_log("using embedded certs");
         // grpc needs CA certs on Windows (and Unix depending on how it's been built)
         // just include as string directly, more convenient than shipping the roots.pem file
         std::string certs(ROOTS_PEM, ROOTS_PEM + sizeof(ROOTS_PEM) / sizeof(ROOTS_PEM[0]));
@@ -213,27 +213,27 @@ static void _audio_sender(CaptionStream &self) {
 
         auto streamer = speech->StreamingRecognize(&context);
 
-        debug_log("write speech config");
+        info_log("write speech config");
         if (write_config(streamer.get(), self.settings)) {
-            debug_log("write speech config done");
+            info_log("write speech config done");
 
             std::thread downstream_thread(&read_results_loop_thread, std::ref(self), streamer.get());
 
-            debug_log("starting audio writes");
+            info_log("starting audio writes");
             write_audio_loop(streamer.get(), self);
             streamer->WritesDone();
-            debug_log("audio writing finished");
+            info_log("audio writing finished");
 
-            debug_log("waiting for downstream thread finish");
+            info_log("waiting for downstream thread finish");
             downstream_thread.join();
-            debug_log("downstream thread finished!");
+            info_log("downstream thread finished!");
 
             // read remaining otherwise Finish() can block?
             StreamingRecognizeResponse response;
             while (streamer->Read(&response))
                 continue;
         } else {
-            debug_log("write speech config failed");
+            info_log("write speech config failed");
         }
 
         auto status = streamer->Finish();
@@ -248,7 +248,7 @@ static void _audio_sender(CaptionStream &self) {
     } catch (...) {
         error_log("_audio_sender exception any error");
     }
-    debug_log("_audio_sender done");
+    info_log("_audio_sender done");
 }
 
 bool CaptionStream::is_stopped() {
@@ -273,10 +273,10 @@ bool CaptionStream::queue_audio_data(const char *audio_data, const uint data_siz
             }
         }
         if (cleared_cnt)
-            debug_log("queue too big, dropped %d old items from queue %s", cleared_cnt, session_pair.c_str());
+            info_log("queue too big, dropped %d old items from queue %s", cleared_cnt, session_pair.c_str());
     }
 
-//    debug_log("queued %s", session_pair.c_str());
+//    info_log("queued %s", session_pair.c_str());
     audio_queue.enqueue(str);
     return true;
 }
@@ -291,7 +291,7 @@ string *CaptionStream::dequeue_audio_data(const std::int64_t timeout_us) {
 
 
 void CaptionStream::stop() {
-    debug_log("CaptionStream stop()");
+    info_log("CaptionStream stop()");
     on_caption_cb_handle.clear();
     stopped = true;
 
@@ -301,7 +301,7 @@ void CaptionStream::stop() {
 
 
 CaptionStream::~CaptionStream() {
-    debug_log("~CaptionStream deconstructor");
+    info_log("~CaptionStream deconstructor");
     if (!is_stopped())
         stop();
 
@@ -313,6 +313,6 @@ CaptionStream::~CaptionStream() {
             cleared++;
         }
     }
-    debug_log("~CaptionStream deconstructor, deleted left %d in queue", cleared);
+    info_log("~CaptionStream deconstructor, deleted left %d in queue", cleared);
 
 }
