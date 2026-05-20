@@ -24,6 +24,16 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "utils.h"
 #include "log.h"
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#else
+#include <sys/socket.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#endif
+
 #include <grpcpp/grpcpp.h>
 #include <google/cloud/speech/v1/cloud_speech.grpc.pb.h>
 
@@ -119,10 +129,6 @@ static void write_audio_loop(
             continue;
         }
 
-//        info_log("qs %zu", audio_queue.size_approx());
-//        std::this_thread::sleep_for(std::chrono::milliseconds(rand() % 30));
-//        std::this_thread::sleep_for(std::chrono::milliseconds(30));
-
         request.set_audio_content(*audio_chunk);
         if (!streamer->Write(request)) {
             info_log("write_audio_loop write failed, stopping");
@@ -131,7 +137,6 @@ static void write_audio_loop(
         }
         if (chunk_count % 20 == 0)
             info_log("sent audio chunk %d, %lu bytes", chunk_count, audio_chunk->size());
-//        info_log("sent audio chunk %d, %lu bytes", chunk_count, audio_chunk->size());
 
         delete audio_chunk;
         chunk_count++;
@@ -153,14 +158,14 @@ static void read_results_loop_thread(
         if (self.is_stopped())
             break;
 
-        std::cout << "Result size: " << response.results_size() << std::endl;
+        info_log("Result size: %d", response.results_size());
         for (int r = 0; r < response.results_size(); ++r) {
             auto result = response.results(r);
-            std::cout << "ind: " << r << " Result stability: " << result.stability() << " final: " << result.is_final() << std::endl;
+            info_log("ind: %d stability: %f final: %d", r, result.stability(), result.is_final());
 
             for (int a = 0; a < result.alternatives_size(); ++a) {
                 auto alternative = result.alternatives(a);
-                std::cout << "conf: " << alternative.confidence() << "; " << alternative.transcript() << std::endl;
+                info_log("conf: %f text: %s", alternative.confidence(), alternative.transcript().c_str());
 
                 auto now = std::chrono::steady_clock::now();
                 if (update_first_received_at)
@@ -204,12 +209,42 @@ static void _audio_sender(CaptionStream &self) {
         options.pem_root_certs = certs;
 #endif
         auto creds = grpc::SslCredentials(options);
-        auto channel = grpc::CreateChannel("speech.googleapis.com", creds);
+
+        // === WORKAROUND for gRPC DNS bug on Windows ===
+        // Resolve "speech.googleapis.com" via system DNS (which works), then connect to IP directly.
+        // We pass the hostname as SSL target name so certificate validation still works.
+        std::string target_address = "speech.googleapis.com:443";
+        info_log("resolving speech.googleapis.com via system DNS...");
+
+#ifdef _WIN32
+        WSADATA wsaData;
+        WSAStartup(MAKEWORD(2, 2), &wsaData);
+#endif
+
+        struct addrinfo hints;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;  // IPv4 only — avoid IPv6 DNS issues
+        hints.ai_socktype = SOCK_STREAM;
+        struct addrinfo* result = nullptr;
+        int dns_ret = getaddrinfo("speech.googleapis.com", "443", &hints, &result);
+        if (dns_ret == 0 && result) {
+            char ip_str[INET_ADDRSTRLEN];
+            struct sockaddr_in* sai = (struct sockaddr_in*)result->ai_addr;
+            inet_ntop(AF_INET, &(sai->sin_addr), ip_str, INET_ADDRSTRLEN);
+            target_address = std::string("ipv4:") + ip_str + ":443";
+            info_log("resolved to %s, using direct IP", target_address.c_str());
+            freeaddrinfo(result);
+        } else {
+            info_log("system DNS resolution failed (code %d), falling back to hostname", dns_ret);
+        }
+
+        grpc::ChannelArguments channel_args;
+        channel_args.SetSslTargetNameOverride("speech.googleapis.com");
+        auto channel = grpc::CreateCustomChannel(target_address, creds, channel_args);
         std::unique_ptr<Speech::Stub> speech(Speech::NewStub(channel));
 
         grpc::ClientContext context;
         context.AddMetadata("x-goog-api-key", self.settings.api_key);
-//        context.set_deadline()
 
         auto streamer = speech->StreamingRecognize(&context);
 
@@ -276,7 +311,6 @@ bool CaptionStream::queue_audio_data(const char *audio_data, const uint data_siz
             info_log("queue too big, dropped %d old items from queue %s", cleared_cnt, session_pair.c_str());
     }
 
-//    info_log("queued %s", session_pair.c_str());
     audio_queue.enqueue(str);
     return true;
 }
